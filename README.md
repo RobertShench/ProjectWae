@@ -1,2 +1,2 @@
-# ProjectWalle
+# ProjectWae
 Research on companion robots
