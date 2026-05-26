@@ -1,0 +1,78 @@
+Compute architecture
+A two-tier compute split works best. Use a Raspberry Pi 5 (or Jetson Orin Nano if you want on-device vision/LLM inference) as the "brain" running the face, voice, planning, and high-level logic. Pair it with an ESP32 or Teensy 4.x as the real-time "spinal cord" handling motor PWM, encoder reads, IMU fusion, and emergency stops at 100–1000 Hz. The two talk over USB-serial or UART. This split is standard in serious hobby and research robots because Linux is bad at hard real-time control and microcontrollers are bad at heavy compute.
+Locomotion
+Three reasonable options, in increasing complexity:
+Differential drive — two driven wheels plus a caster — is the easiest to control, cheapest, and what I'd recommend unless you have a reason to upgrade. Use two DC gearmotors (12 V, ~200 RPM, with quadrature encoders, e.g. Pololu 37D series) and cut wheel arches into the bottom face so wheels sit partially inside the box.
+Mecanum/omni wheels (4 driven wheels) let the robot strafe sideways and rotate in place independently — great for navigating tight spaces — but kinematics are more involved and you need 4 motor channels.
+Tracks are overkill indoors but useful on carpet/uneven floors.
+For the motor driver, a Cytron MDD10A or DRV8871 module per channel handles 12 V gearmotors comfortably. Avoid L298N — it's lossy and dated.
+Display / face
+You have two main paths. A single rectangular touchscreen (7" or 5" HDMI/DSI, e.g. the official Pi 7" display) on one face is simplest — animate the face in Pygame, Qt/QML, or as a fullscreen web app (HTML/CSS/SVG is surprisingly nice for expressive faces because animation tooling is mature). Alternatively, two small round IPS displays (1.28" or 2.1", GC9A01-based) as separate "eyes" gives a Vector/Cozmo-style look with more character but more complexity.
+Pick the display first — its mounting cutout drives the front-panel design.
+Sensors
+Minimum viable set: IMU (BNO055 gives you fused orientation out of the box), wheel encoders (already on the motors), and 3–5 forward-facing ToF distance sensors (VL53L1X) for obstacle avoidance. Add a USB or CSI camera for vision. If you want real navigation/SLAM, an RPLidar A1 (~$100) on top of the cube enables ROS 2 Nav2 to do mapping and autonomous path planning out of the box. A microphone (USB conference mic or ReSpeaker 2-Mic HAT) and a small amplified speaker (e.g. Adafruit MAX98357 I2S amp + 3 W driver) cover voice I/O.
+Power
+A 3S or 4S Li-ion pack (3× or 4× 18650, ~10–12 Ah) gives you several hours of runtime and fits easily. Use a proper BMS with overcurrent/overdischarge protection. Step down to 5 V (5 A buck converter) for the Pi and 3.3 V for sensors; feed motors directly from the pack through the driver. Add an XT60 charging port, a master switch, and a fuse on the battery output. A coulomb counter (INA219/INA226) lets the robot report its own battery state.
+Software stack
+ROS 2 (Humble or Jazzy on Ubuntu 24.04) is the right choice if you want navigation, sensor fusion, and modular nodes — it pays off fast even though the learning curve is real. For the face and conversational layer, a Python process running Pygame or a Chromium kiosk publishes/subscribes to ROS topics ("emotion", "speech_state", "battery") so the face reacts to robot state. For voice, Whisper.cpp (small model) handles speech-to-text locally; Piper does fast neural TTS; an LLM call (local via llama.cpp or remote API) handles dialogue. The ESP32 runs a small firmware exposing /cmd_vel → motor commands and publishing /odom and /imu via micro-ROS or a simple serial protocol.
+Here's how the pieces connect:
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation-duration: 0.25s;
+    animation-timing-function: cubic-bezier(0.19, 1, 0.22, 1);
+  }
+VvisualizeVvisualize show_widgetA suggested build order
+Build it in this sequence — each layer gets you a working milestone before you commit to the next:
+
+Chassis + drivetrain only. Laser-cut acrylic or 3D-printed PETG frame, motors, wheels, battery, ESP32, driver. Goal: it drives forward/back/turns from serial commands.
+Add the Pi and the link. Get ROS 2 on the Pi, micro-ROS or a serial protocol on the ESP32, publish /odom and accept /cmd_vel. Drive it with teleop_twist_keyboard.
+Add the face. Mount the screen, get an animated face running fullscreen on Pi boot. Wire it to a ROS topic so the face reflects state (idle/listening/moving).
+Add sensing. ToF ring + IMU + camera. Test obstacle avoidance as a behavior.
+Add voice and intelligence. STT → intent/LLM → TTS pipeline. Connect intents to robot behaviors.
+Add LiDAR + Nav2 if you want autonomous navigation. This is the biggest single jump in capability.
+
+A few decisions worth making early
+A few things to nail down early because they cascade through the whole design: indoor-only vs ability to handle thresholds and rugs (changes wheel diameter and motor torque), how much autonomy you want (teleoperation needs almost nothing; SLAM and autonomous navigation pushes you toward Jetson + LiDAR), how the robot charges (manual plug is fine for a prototype; a contact-pad dock is a serious mechanical project), and whether the face needs to look "alive" when idle (driving the look-and-feel of the animation more than the hardware).
+Happy to go deeper on any layer — locomotion math, the face animation stack, the ROS 2 node graph, or the power/charging design.You said: Power requirement and size?Power requirement and size?May 25Claude responded: Power budgetCalculated power budgets and battery sizing comprehensivelyCalculated power budgets and battery sizing comprehensivelyPower budget
+Rough per-subsystem draw at the bus voltage you'd feed each one:
+SubsystemTypicalPeakRaspberry Pi 5 (with active cooler)5–7 W12 WESP32 + IMU + ToF + encoders~1 W1.5 W7" touchscreen2–3 W3 WCamera + RPLidar A12 W2.5 WSpeaker amp (driving audio)1–2 W4 WTwo 12 V gearmotors (cruising)15–25 W100 W+ (stall)DC-DC + linear regulator losses~10% overhead—
+Combine those into three realistic scenarios:
+
+Idle / "alive but parked" (face animated, listening, no motion): ~10–12 W
+Active conversation + light driving: ~25–30 W
+Driving + vision + speaking simultaneously: ~40–50 W
+Worst-case spike (both motors near stall): well over 100 W, brief
+
+Sustained average for a chatty mobile robot lands around 18–22 W. Size the battery for that average; size the wiring and fuses for the stall case.
+Battery sizing
+A 4S Li-ion pack (14.4 V nominal, 16.8 V full) is the sweet spot — drives the 12 V motors directly through a buck regulator and steps down cleanly to 5 V for the Pi. Concrete option:
+
+4S2P 18650 with 3000 mAh cells: ~14.4 V × 6 Ah = 86 Wh
+Mixed-use runtime: ~4 hours
+Active driving: ~2.5 hours
+Pack dimensions: roughly 75 × 40 × 70 mm
+Weight: ~380 g
+Add a 4S BMS board (~70 × 25 mm), an XT60 charging connector, and a master switch
+
+If you want more endurance, 4S3P (12 cells, ~130 Wh) gives ~6 hours mixed at ~95 × 60 × 70 mm and ~570 g — still tiny relative to the cube. A 4S LiPo pouch (5000–8000 mAh) is lighter for the same energy but needs more careful charging and impact protection.
+For charging, a 16.8 V 2 A smart charger plugged into the XT60 refills 4S2P in about 3 hours. The Pi gets its own 5 V via a 5 A buck (Pololu D24V50F5 or similar); sensors run off a small 3.3 V LDO.
+Physical size — what fits and what doesn't
+The 25 cm cube gives you ~15.6 liters of internal volume. Subtracting walls, brackets, and the screen recess, you have roughly 12 liters usable. Approximate footprints of the major occupants:
+
+Two 37 mm gearmotors with gearboxes and 100 mm wheels: ~0.6 L combined (plus they protrude through the floor)
+Battery (4S2P): ~0.22 L
+Raspberry Pi 5 with cooler: ~0.1 L
+7" display + driver board, mounted to the front face: ~0.15 L
+Motor driver + DC-DC boards + ESP32: ~0.2 L
+LiDAR on the top face: ~0.15 L
+Speaker, mic array, cable runs, fasteners: ~0.5 L
+
+That's about 2 liters of actual hardware in a 15-liter shell. Space is not your constraint — layout, weight distribution, and thermal management are. A few practical notes:
+
+Put the battery low and centered for a low center of gravity. Wheelbase is roughly 18–20 cm, so a top-heavy load will tip on quick turns.
+Estimated total weight: 2.5–3.0 kg. Motors sized at ~3 kg·cm continuous torque per wheel (e.g. Pololu 37D 50:1) handle that comfortably and give ~1 m/s top speed with 100 mm wheels.
+Leave a vent slot on one face (or a quiet fan) for the Pi 5 — it throttles around 80 °C and a sealed cube hits that fast under load.
+The LiDAR needs an unobstructed 360° horizontal sweep, which usually means mounting it on the top face with the rest of the cube ducking just below its scan plane.
+
+If runtime matters more than mass, scale the pack up to 4S3P; if you'd rather a lighter robot for safer falls and easier handling, the 4S2P at ~3 kg is the better balance.
