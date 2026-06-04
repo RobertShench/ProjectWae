@@ -1,0 +1,3 @@
+[submodule "Reference/ReachyMiniCode"]
+	path = Reference/ReachyMiniCode
+	url = https://github.com/pollen-robotics/reachy_mini/releases
